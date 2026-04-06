@@ -1,6 +1,6 @@
 {
   "name": "dingdawg-governance",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "AI governance for Claude Code, Cursor, and any MCP-compatible agent. Govern actions. Audit trails. Compliance checks.",
   "main": "dist/index.js",
   "bin": {
