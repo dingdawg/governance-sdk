@@ -1,0 +1,48 @@
+{
+  "name": "dingdawg-governance",
+  "version": "1.0.2",
+  "description": "AI governance for Claude Code, Cursor, and any MCP-compatible agent. Govern actions. Audit trails. Compliance checks.",
+  "main": "dist/index.js",
+  "bin": {
+    "dingdawg-governance": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": [
+    "mcp",
+    "ai-governance",
+    "audit-trail",
+    "compliance",
+    "policy-enforcement",
+    "dingdawg",
+    "claude-code",
+    "cursor",
+    "ai-agent"
+  ],
+  "author": "DingDawg <support@dingdawg.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dingdawg/governance-sdk"
+  },
+  "homepage": "https://dingdawg.com/developers",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
