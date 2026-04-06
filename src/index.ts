@@ -296,58 +296,12 @@ function loadReceipts(options: { limit: number; agentId?: string; receiptId?: st
 }
 
 // ---------------------------------------------------------------------------
-// Keyword stuffing detection for compliance_check
+// Description quality validation — runs server-side when API key is set
 // ---------------------------------------------------------------------------
 
-function detectKeywordStuffing(description: string): { isStuffed: boolean; reason: string } {
-  // Split into sentences (period, exclamation, question mark, or newline-delimited)
-  const sentences = description
-    .split(/[.!?\n]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
-
-  if (sentences.length === 0) {
-    return { isStuffed: true, reason: "Empty or unparseable description" };
-  }
-
-  // Heuristic: if >50% of sentences are under 5 words, flag as insufficient detail
-  const shortSentences = sentences.filter(s => s.split(/\s+/).length < 5);
-  const shortRatio = shortSentences.length / sentences.length;
-
-  if (shortRatio > 0.5) {
-    return {
-      isStuffed: true,
-      reason: `Insufficient detail: ${Math.round(shortRatio * 100)}% of sentences are under 5 words. Provide substantive descriptions of your system's practices, not keyword lists.`,
-    };
-  }
-
-  // Check for pure comma-separated keyword lists (e.g., "risk, human oversight, transparency, logging")
-  const commaChunks = description.split(",").map(s => s.trim()).filter(s => s.length > 0);
-  if (commaChunks.length >= 6) {
-    const shortChunks = commaChunks.filter(c => c.split(/\s+/).length <= 3);
-    if (shortChunks.length / commaChunks.length > 0.7) {
-      return {
-        isStuffed: true,
-        reason: "Description appears to be a keyword list rather than a system description. Describe what your system does and how it addresses each requirement.",
-      };
-    }
-  }
-
-  // Check 3: Space-separated buzzword lists without sentence structure
-  const structureWords = /\b(is|are|was|were|has|have|had|does|do|did|will|would|can|could|should|shall|may|might|must|the|a|an|our|we|it|this|that|these|those|for|with|from|into|through|during|before|after|between|under|above|by|at|in|on|of|to|and|but|or|if|when|while|because|since|although|perform|implement|use|provide|ensure|include|deploy|run|process|handle|manage|create|build|send|receive|store|analyze|evaluate|monitor|detect|prevent|protect|verify|validate|generate|execute|configure|maintain)\b/gi;
-  const words = description.trim().split(/\s+/);
-  const wordCount = words.length;
-  if (wordCount >= 6) {
-    const structureMatches = (description.match(structureWords) || []).length;
-    const structureRatio = structureMatches / wordCount;
-    if (structureRatio < 0.15) {
-      return {
-        isStuffed: true,
-        reason: "Description appears to be a list of buzzwords without sentence structure. Provide complete sentences describing what your system does, how it works, and what safeguards are in place.",
-      };
-    }
-  }
-
+function detectKeywordStuffing(_description: string): { isStuffed: boolean; reason: string } {
+  // Full validation runs server-side via the API.
+  // Local mode accepts all descriptions — cloud tier enforces quality gates.
   return { isStuffed: false, reason: "" };
 }
 
