@@ -1,5 +1,6 @@
 # DingDawg Governance SDK — Universal governance layer for AI agents
 
+[![CI](https://github.com/dingdawg/governance-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/dingdawg/governance-sdk/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/dingdawg-governance)](https://www.npmjs.com/package/dingdawg-governance)
 [![PyPI version](https://img.shields.io/pypi/v/dingdawg-loop)](https://pypi.org/project/dingdawg-loop/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -113,6 +114,21 @@ Two lines. Every execution is pre-checked, receipted, and fail-closed. If govern
 | Compliance report PDFs (certified) | Paid tier | [dingdawg.com/compliance](https://dingdawg.com/compliance) |
 
 The core gate runs fully offline. Cloud unlocks team visibility, IPFS pinning, and certified compliance reports.
+
+---
+
+## Examples
+
+Runnable examples in [`examples/`](./examples/):
+
+| File | What it shows | Regulated use case |
+|------|---------------|--------------------|
+| [`01-basic-governance.js`](./examples/01-basic-governance.js) | `govern_action` via MCP JSON-RPC subprocess | Fintech — payment transfer gate |
+| [`02-python-scheduled-agent.py`](./examples/02-python-scheduled-agent.py) | `@schedule_governed` decorator with cron | Healthcare — HIPAA PHI sync |
+| [`03-crewai-integration.py`](./examples/03-crewai-integration.py) | CrewAI agents wrapped with governance | Employment — CO SB 205 hiring audit |
+| [`04-claude-code-mcp-config.json`](./examples/04-claude-code-mcp-config.json) | Drop-in `.mcp.json` config | All regulated verticals |
+
+Each example includes expected output as comments and the governance receipt structure.
 
 ---
 

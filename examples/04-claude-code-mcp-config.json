@@ -1,0 +1,106 @@
+{
+  "_comment": [
+    "DingDawg Governance — drop-in MCP config for Claude Code.",
+    "",
+    "HOW TO USE:",
+    "  Option A (project-level): copy this object into .mcp.json at your repo root.",
+    "  Option B (global):        merge mcpServers into ~/.claude/mcp.json",
+    "  Option C (Claude Code CLI): claude mcp add dingdawg-governance npx dingdawg-governance",
+    "",
+    "After adding, restart Claude Code. You will see two new MCP tools:",
+    "  govern_action    — pre-execution policy gate",
+    "  audit_trail      — retrieve governance receipts",
+    "  compliance_check — score against EU AI Act / CO SB 205 / NIST AI RMF / ISO 42001",
+    "",
+    "No API key required for local mode.",
+    "Local receipts are saved at: ~/.dingdawg/governance/receipts/",
+    "",
+    "Get a free API key at: https://dingdawg.com/developers"
+  ],
+  "mcpServers": {
+    "dingdawg-governance": {
+      "_comment": "Core governance server — govern_action, audit_trail, compliance_check",
+      "command": "npx",
+      "args": [
+        "dingdawg-governance"
+      ],
+      "env": {
+        "DINGDAWG_API_KEY": "${DINGDAWG_API_KEY}",
+        "_comment_api_key": [
+          "Leave blank for local-only mode (works offline, receipts on disk).",
+          "Set to your API key for cloud-tier policy evaluation, IPFS pinning,",
+          "and certified compliance reports.",
+          "Get your key at: https://dingdawg.com/developers"
+        ],
+        "DINGDAWG_EXPLAIN": "true",
+        "_comment_explain": [
+          "DINGDAWG_EXPLAIN=true enables LNN causal trace in every receipt.",
+          "Shows why each policy decision was made — required for EU AI Act Art. 13",
+          "(transparency obligations). Set to false to reduce receipt verbosity."
+        ],
+        "DINGDAWG_API_URL": "https://api.dingdawg.com/v1",
+        "_comment_api_url": "Override only if you are running a self-hosted DingDawg instance."
+      }
+    },
+    "dingdawg-loop": {
+      "_comment": "Scheduled governed agent runner — schedule_governed, loop_status, loop_receipts",
+      "command": "npx",
+      "args": [
+        "dingdawg-loop"
+      ],
+      "env": {
+        "DINGDAWG_API_KEY": "${DINGDAWG_API_KEY}",
+        "_comment_shared_key": "Use the same API key as dingdawg-governance — one key covers all tools.",
+        "DINGDAWG_LOOP_STORAGE": "${HOME}/.dingdawg/loops",
+        "_comment_loop_storage": [
+          "Where scheduled agent state and receipts are stored.",
+          "Default: ~/.dingdawg/loops",
+          "Change this if you want loop receipts in a shared team directory."
+        ],
+        "DINGDAWG_LOOP_MAX_CONCURRENT": "4",
+        "_comment_concurrency": "Maximum number of governed agent loops that can run simultaneously."
+      }
+    }
+  },
+  "_usage_examples": {
+    "_comment": "Once configured, Claude Code can call these tools directly.",
+    "govern_before_destructive_action": {
+      "tool": "govern_action",
+      "arguments": {
+        "agent_id": "@my-agent",
+        "action_type": "delete_records",
+        "action_description": "Delete all records older than 90 days from the events table",
+        "target_resource": "user_database",
+        "risk_tier": "high",
+        "context": {
+          "table": "events",
+          "row_estimate": "12000",
+          "environment": "production"
+        }
+      }
+    },
+    "check_compliance_before_launch": {
+      "tool": "compliance_check",
+      "arguments": {
+        "system_description": "Automated loan approval system using credit score, income, and employment history. Includes human oversight for decisions above $50k. Audit log enabled. Risk assessment performed quarterly.",
+        "framework": "all",
+        "deployment_stage": "staging"
+      }
+    },
+    "retrieve_audit_trail": {
+      "tool": "audit_trail",
+      "arguments": {
+        "agent_id": "@my-agent",
+        "time_range": "24h",
+        "limit": 20
+      }
+    }
+  },
+  "_regulated_use_cases": {
+    "healthcare_hipaa": "Set context.regulation=HIPAA, risk_tier=high for PHI access. Receipts are HIPAA §164.312(b) audit logs.",
+    "fintech_payments": "Use govern_action before any transfer_funds or charge_card action. Receipt is adverse-action documentation.",
+    "employment_co_sb_205": "Wrap all hiring AI with risk_tier=high + context.regulation=CO_SB_205. Every decision gets a receipt for human review.",
+    "edtech_ferpa": "Set context.data_classification=student_records. Receipts document who accessed what student data and when.",
+    "legal_chain_of_custody": "Use receipt_id as chain-of-custody identifier. Cloud tier pins to IPFS for tamper-evident proof."
+  }
+}

@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript compile check
+        run: npx tsc --noEmit
+
+      - name: Build dist
+        run: npm run build
+
+      # -----------------------------------------------------------------------
+      # Smoke test: spawn the MCP server, send a govern_action JSON-RPC call,
+      # verify the response contains a receipt with decision + governed=true.
+      # -----------------------------------------------------------------------
+      - name: Smoke test — govern_action (local mode)
+        run: |
+          node - <<'EOF'
+          const { spawn } = require("child_process");
+          const server = spawn("node", ["dist/index.js"], {
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+
+          let buffer = "";
+          let passed = false;
+
+          server.stdout.on("data", (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const msg = JSON.parse(line);
+                if (msg.id === 1 && msg.result) {
+                  const receipt = JSON.parse(msg.result.content[0].text);
+
+                  // Assertions
+                  if (!receipt.receipt_id) throw new Error("Missing receipt_id");
+                  if (!receipt.decision) throw new Error("Missing decision");
+                  if (receipt.governed !== true) throw new Error("governed !== true");
+                  if (!["allow","deny","review"].includes(receipt.decision)) {
+                    throw new Error("Invalid decision: " + receipt.decision);
+                  }
+                  if (typeof receipt.risk_score !== "number") throw new Error("Missing risk_score");
+
+                  console.log("PASS receipt_id=" + receipt.receipt_id);
+                  console.log("PASS decision=" + receipt.decision);
+                  console.log("PASS risk_score=" + receipt.risk_score);
+                  console.log("PASS governed=" + receipt.governed);
+                  passed = true;
+                  server.kill();
+                }
+              } catch (e) {
+                console.error("FAIL " + e.message);
+                server.kill();
+                process.exit(1);
+              }
+            }
+          });
+
+          server.stderr.on("data", () => {}); // suppress startup noise
+
+          server.on("error", (err) => {
+            console.error("Server spawn failed: " + err.message);
+            process.exit(1);
+          });
+
+          server.on("close", () => {
+            if (!passed) {
+              console.error("FAIL server closed without producing a receipt");
+              process.exit(1);
+            }
+            process.exit(0);
+          });
+
+          // Send govern_action request after server initialises
+          setTimeout(() => {
+            const req = {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: {
+                name: "govern_action",
+                arguments: {
+                  agent_id: "@ci-smoke-agent",
+                  action_type: "read_config",
+                  action_description: "CI smoke test — read application config file",
+                  target_resource: "config_file",
+                  risk_tier: "low",
+                },
+              },
+            };
+            server.stdin.write(JSON.stringify(req) + "\n");
+          }, 800);
+
+          // Timeout guard
+          setTimeout(() => {
+            console.error("FAIL smoke test timed out after 15s");
+            server.kill();
+            process.exit(1);
+          }, 15000);
+          EOF
+
+      - name: Smoke test — compliance_check (local mode)
+        run: |
+          node - <<'EOF'
+          const { spawn } = require("child_process");
+          const server = spawn("node", ["dist/index.js"], {
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+
+          let buffer = "";
+          let passed = false;
+
+          server.stdout.on("data", (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const msg = JSON.parse(line);
+                if (msg.id === 2 && msg.result) {
+                  const result = JSON.parse(msg.result.content[0].text);
+                  if (!result.check_id) throw new Error("Missing check_id");
+                  if (typeof result.overall_compliance !== "number") throw new Error("Missing overall_compliance");
+                  if (!result.frameworks || !Array.isArray(result.frameworks)) throw new Error("Missing frameworks array");
+                  console.log("PASS check_id=" + result.check_id);
+                  console.log("PASS overall_compliance=" + result.overall_compliance);
+                  console.log("PASS frameworks=" + result.frameworks.map(f => f.name).join(", "));
+                  passed = true;
+                  server.kill();
+                }
+              } catch (e) {
+                console.error("FAIL " + e.message);
+                server.kill();
+                process.exit(1);
+              }
+            }
+          });
+
+          server.stderr.on("data", () => {});
+
+          server.on("close", () => {
+            if (!passed) { console.error("FAIL no compliance_check response"); process.exit(1); }
+            process.exit(0);
+          });
+
+          setTimeout(() => {
+            const req = {
+              jsonrpc: "2.0",
+              id: 2,
+              method: "tools/call",
+              params: {
+                name: "compliance_check",
+                arguments: {
+                  system_description:
+                    "CI smoke test system. Includes risk assessment, human oversight, " +
+                    "audit logging, and transparency reporting. Governance policy enforced.",
+                  framework: "nist_ai_rmf",
+                  deployment_stage: "development",
+                },
+              },
+            };
+            server.stdin.write(JSON.stringify(req) + "\n");
+          }, 800);
+
+          setTimeout(() => {
+            console.error("FAIL compliance_check timed out");
+            server.kill();
+            process.exit(1);
+          }, 15000);
+          EOF
