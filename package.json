@@ -1,7 +1,11 @@
 {
   "name": "dingdawg-governance",
-  "version": "1.0.3",
-  "description": "AI governance for Claude Code, Cursor, and any MCP-compatible agent. Govern actions. Audit trails. Compliance checks.",
+  "mcpName": "io.github.dingdawg/dingdawg-governance",
+  "version": "2.1.9",
+  "files": [
+    "dist"
+  ],
+  "description": "Governance receipts for AI agents — universal, MCP-native, fail-closed governance layer compliant with EU AI Act Art. 12, Colorado AI Act (SB 24-205), and NIST AI RMF. LNN interpretability, IPFS audit proofs, and rollback for any agent in any framework.",
   "main": "dist/index.js",
   "bin": {
     "dingdawg-governance": "dist/index.js"
@@ -9,24 +13,41 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts"
+    "dev": "ts-node src/index.ts",
+    "prepublishOnly": "bash ../../ip-gate.sh ./dist"
   },
   "keywords": [
+    "ai",
+    "governance",
+    "agents",
     "mcp",
-    "ai-governance",
-    "audit-trail",
     "compliance",
-    "policy-enforcement",
-    "dingdawg",
-    "claude-code",
-    "cursor",
-    "ai-agent"
+    "audit",
+    "llm",
+    "crewai",
+    "langgraph",
+    "claude",
+    "regulated-ai",
+    "eu-ai-act",
+    "colorado-sb205",
+    "hipaa",
+    "fintech",
+    "governance-receipts",
+    "receipts",
+    "audit-trail",
+    "tamper-proof",
+    "ai-governance",
+    "responsible-ai",
+    "llm-governance",
+    "signed-receipts",
+    "ai-agents",
+    "model-context-protocol"
   ],
-  "author": "DingDawg <support@dingdawg.com>",
-  "license": "MIT",
+  "author": "Innovative Systems Global <support@dingdawg.com>",
+  "license": "BUSL-1.1",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "zod": "^3.22.0"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
@@ -40,7 +61,7 @@
     "type": "git",
     "url": "https://github.com/dingdawg/governance-sdk"
   },
-  "homepage": "https://dingdawg.com/developers",
+  "homepage": "https://dingdawg.com/marketplace/governance",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
