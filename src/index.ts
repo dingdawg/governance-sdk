@@ -15,6 +15,15 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
+import {
+  isExplainEnabled,
+  generateExplanationTrace,
+  toCompactExplanation,
+  type ExplanationTrace,
+  type CompactExplanation,
+  type TraceInput,
+} from "./lnn_interpretability.js";
+import { registerMeterTools } from "./meter_tools.js";
 
 const API_BASE = process.env.DINGDAWG_API_URL || "https://api.dingdawg.com/v1";
 const API_KEY = process.env.DINGDAWG_API_KEY || "";
@@ -80,6 +89,14 @@ interface PolicyViolation {
   description: string;
 }
 
+interface VerifiedBadge {
+  text: "Powered by DingDawg Verified";
+  version: string;
+  receipt_id: string;
+  ipfs_ready: boolean;
+  embed_url: string;
+}
+
 interface GovernanceReceipt {
   receipt_id: string;
   timestamp: string;
@@ -93,6 +110,17 @@ interface GovernanceReceipt {
   policy_violations: PolicyViolation[];
   recommended_controls: string[];
   context: Record<string, string>;
+  verified_badge?: VerifiedBadge;
+}
+
+function buildVerifiedBadge(receiptId: string): VerifiedBadge {
+  return {
+    text: "Powered by DingDawg Verified",
+    version: "1.0.3",
+    receipt_id: receiptId,
+    ipfs_ready: true,
+    embed_url: `https://dingdawg.com/verify/${receiptId}`,
+  };
 }
 
 const NEGATION_PREFIXES = /\b(?:no|not|without|lacks?|never|doesn'?t|don'?t|isn'?t|aren'?t|won'?t|cannot|can'?t|absent|missing|zero)\s+/i;
@@ -110,130 +138,47 @@ function hasKeywordWithoutNegation(desc: string, keyword: string): boolean {
   return false;
 }
 
+/**
+ * Free-tier local policy check (thin client).
+ *
+ * The full weighted policy engine — the complete keyword→weight→threshold
+ * rulebook that produces allow/deny/review verdicts — runs SERVER-SIDE ONLY
+ * (api.dingdawg.com). When DINGDAWG_API_KEY is set, govern_action calls that
+ * API first and this function is never reached; it exists purely as the
+ * offline fallback for keyless free-tier use.
+ *
+ * To avoid shipping a reverse-engineering cookbook, this fallback does the
+ * minimum a thin client should: a tiny static list of the most obvious
+ * destructive verbs is flagged for human review; everything else is allowed.
+ * No weights, no score accumulation, no thresholds are exposed here.
+ */
 function evaluateLocalPolicies(
   actionType: string,
   actionDescription: string,
   targetResource: string,
   riskTier: string,
 ): { violations: PolicyViolation[]; riskScore: number; decision: "allow" | "deny" | "review"; controls: string[] } {
+  void riskTier; // full risk-tier weighting is a server-side concern
+  const haystack = `${actionType} ${actionDescription} ${targetResource}`.toLowerCase();
+
+  // Minimal, non-revealing heuristic: only the most obvious destructive verbs.
+  const obviousDestructiveVerbs = ["delete", "drop", "destroy", "wipe", "purge"];
+  const looksDestructive = obviousDestructiveVerbs.some(v => haystack.includes(v));
+
   const violations: PolicyViolation[] = [];
-  const controls: string[] = [];
-  let riskScore = 0;
-  const desc = actionDescription.toLowerCase();
-  const resource = targetResource.toLowerCase();
-  const action = actionType.toLowerCase();
+  const controls: string[] = ["Set DINGDAWG_API_KEY for full policy analysis."];
 
-  // --- Data access controls ---
-  const sensitiveResources = ["user_database", "payment", "credentials", "secrets", "pii", "health_records", "ssn", "financial"];
-  for (const sr of sensitiveResources) {
-    if (resource.includes(sr) || desc.includes(sr)) {
-      riskScore += 25;
-      violations.push({
-        policy: "data_access_control",
-        severity: "high",
-        description: `Action targets sensitive resource containing "${sr}" — requires elevated access controls`,
-      });
-      controls.push(`Enforce role-based access control for ${sr} resources`);
-      break;
-    }
-  }
-
-  // --- PII handling ---
-  const piiIndicators = ["personal data", "pii", "email address", "phone number", "social security", "date of birth", "name and address"];
-  for (const indicator of piiIndicators) {
-    if (desc.includes(indicator) || resource.includes(indicator.replace(/ /g, "_"))) {
-      riskScore += 20;
-      violations.push({
-        policy: "pii_handling",
-        severity: "high",
-        description: `PII detected ("${indicator}") — requires data protection controls per GDPR/CCPA`,
-      });
-      controls.push("Apply data minimization — collect only what is necessary");
-      controls.push("Ensure PII encryption at rest and in transit");
-      break;
-    }
-  }
-
-  // --- Rate limit policy ---
-  const bulkActions = ["bulk", "batch", "mass", "all users", "broadcast", "export_all"];
-  for (const ba of bulkActions) {
-    if (desc.includes(ba) || action.includes(ba)) {
-      riskScore += 15;
-      violations.push({
-        policy: "rate_limit_policy",
-        severity: "medium",
-        description: `Bulk operation detected ("${ba}") — requires rate limiting and batching controls`,
-      });
-      controls.push("Implement batch size limits and progressive processing");
-      break;
-    }
-  }
-
-  // --- Human-in-the-loop requirements ---
-  const highStakesActions = ["delete", "purchase", "payment", "transfer", "send_email", "modify_data", "deploy", "terminate", "revoke"];
-  const needsHumanReview = highStakesActions.some(a => action.includes(a) || desc.includes(a));
-  if (needsHumanReview && (riskTier === "high" || riskTier === "critical")) {
-    riskScore += 20;
+  if (looksDestructive) {
     violations.push({
-      policy: "human_in_the_loop",
-      severity: "critical",
-      description: `High-stakes action "${actionType}" at ${riskTier} risk requires human approval`,
+      policy: "basic_safety_check",
+      severity: "medium",
+      description: "Potentially destructive action flagged by the free-tier local check — manual review recommended.",
     });
-    controls.push("Require explicit human approval before execution");
-    controls.push("Log the approver identity and timestamp");
+    controls.push("Review this action manually before executing.");
+    return { violations, riskScore: 0, decision: "review", controls };
   }
 
-  // --- Destructive action detection ---
-  const destructiveKeywords = ["delete", "drop", "truncate", "destroy", "purge", "wipe", "remove all"];
-  for (const dk of destructiveKeywords) {
-    if (action.includes(dk) || desc.includes(dk)) {
-      riskScore += 30;
-      violations.push({
-        policy: "destructive_action_guard",
-        severity: "critical",
-        description: `Destructive operation detected ("${dk}") — requires backup and confirmation`,
-      });
-      controls.push("Create backup before executing destructive operation");
-      controls.push("Require double confirmation for destructive actions");
-      break;
-    }
-  }
-
-  // --- External communication ---
-  const externalComms = ["send_email", "sms", "webhook", "api_call", "notify", "broadcast"];
-  for (const ec of externalComms) {
-    if (action.includes(ec) || desc.includes(ec)) {
-      riskScore += 10;
-      violations.push({
-        policy: "external_communication",
-        severity: "medium",
-        description: `External communication detected ("${ec}") — review content before sending`,
-      });
-      controls.push("Validate message content before sending externally");
-      break;
-    }
-  }
-
-  // --- Risk tier amplifier ---
-  if (riskTier === "critical") riskScore += 20;
-  else if (riskTier === "high") riskScore += 10;
-
-  riskScore = Math.max(0, Math.min(100, riskScore));
-
-  // --- Decision ---
-  let decision: "allow" | "deny" | "review";
-  if (riskScore >= 70) {
-    decision = "deny";
-  } else if (riskScore >= 40 || violations.some(v => v.severity === "critical")) {
-    decision = "review";
-  } else {
-    decision = "allow";
-  }
-
-  // Deduplicate controls
-  const uniqueControls = [...new Set(controls)];
-
-  return { violations, riskScore, decision, controls: uniqueControls };
+  return { violations, riskScore: 0, decision: "allow", controls };
 }
 
 function saveReceipt(receipt: GovernanceReceipt): void {
@@ -296,12 +241,58 @@ function loadReceipts(options: { limit: number; agentId?: string; receiptId?: st
 }
 
 // ---------------------------------------------------------------------------
-// Description quality validation — runs server-side when API key is set
+// Keyword stuffing detection for compliance_check
 // ---------------------------------------------------------------------------
 
-function detectKeywordStuffing(_description: string): { isStuffed: boolean; reason: string } {
-  // Full validation runs server-side via the API.
-  // Local mode accepts all descriptions — cloud tier enforces quality gates.
+function detectKeywordStuffing(description: string): { isStuffed: boolean; reason: string } {
+  // Split into sentences (period, exclamation, question mark, or newline-delimited)
+  const sentences = description
+    .split(/[.!?\n]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (sentences.length === 0) {
+    return { isStuffed: true, reason: "Empty or unparseable description" };
+  }
+
+  // Heuristic: if >50% of sentences are under 5 words, flag as insufficient detail
+  const shortSentences = sentences.filter(s => s.split(/\s+/).length < 5);
+  const shortRatio = shortSentences.length / sentences.length;
+
+  if (shortRatio > 0.5) {
+    return {
+      isStuffed: true,
+      reason: `Insufficient detail: ${Math.round(shortRatio * 100)}% of sentences are under 5 words. Provide substantive descriptions of your system's practices, not keyword lists.`,
+    };
+  }
+
+  // Check for pure comma-separated keyword lists (e.g., "risk, human oversight, transparency, logging")
+  const commaChunks = description.split(",").map(s => s.trim()).filter(s => s.length > 0);
+  if (commaChunks.length >= 6) {
+    const shortChunks = commaChunks.filter(c => c.split(/\s+/).length <= 3);
+    if (shortChunks.length / commaChunks.length > 0.7) {
+      return {
+        isStuffed: true,
+        reason: "Description appears to be a keyword list rather than a system description. Describe what your system does and how it addresses each requirement.",
+      };
+    }
+  }
+
+  // Check 3: Space-separated buzzword lists without sentence structure
+  const structureWords = /\b(is|are|was|were|has|have|had|does|do|did|will|would|can|could|should|shall|may|might|must|the|a|an|our|we|it|this|that|these|those|for|with|from|into|through|during|before|after|between|under|above|by|at|in|on|of|to|and|but|or|if|when|while|because|since|although|perform|implement|use|provide|ensure|include|deploy|run|process|handle|manage|create|build|send|receive|store|analyze|evaluate|monitor|detect|prevent|protect|verify|validate|generate|execute|configure|maintain)\b/gi;
+  const words = description.trim().split(/\s+/);
+  const wordCount = words.length;
+  if (wordCount >= 6) {
+    const structureMatches = (description.match(structureWords) || []).length;
+    const structureRatio = structureMatches / wordCount;
+    if (structureRatio < 0.15) {
+      return {
+        isStuffed: true,
+        reason: "Description appears to be a list of buzzwords without sentence structure. Provide complete sentences describing what your system does, how it works, and what safeguards are in place.",
+      };
+    }
+  }
+
   return { isStuffed: false, reason: "" };
 }
 
@@ -311,7 +302,7 @@ function detectKeywordStuffing(_description: string): { isStuffed: boolean; reas
 
 const server = new McpServer({
   name: "dingdawg-governance",
-  version: "1.0.2",
+  version: "2.1.0",
 });
 
 // ---------------------------------------------------------------------------
@@ -333,6 +324,22 @@ server.tool(
     const tier = risk_tier || "medium";
     const resource = target_resource || "unspecified";
     const ctx = context || {};
+
+    const rateCheck = checkFreeRateLimit("govern_action", 10);
+    if (!rateCheck.allowed) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "free_tier_limit_reached",
+            message: "You've used all 10 free governed actions. Upgrade to continue.",
+            upgrade_url: "https://dingdawg.com/pricing",
+            starter_checkout: "https://checkout.dingdawg.com/b/9B69AS9m3gKP5hA1vxdjO04",
+            note: "Starter: $19/mo — 50 calls/day | Pro: $49/mo — 200 calls/day",
+          }, null, 2),
+        }],
+      };
+    }
 
     // If API key is set, try the API first
     if (API_KEY) {
@@ -374,6 +381,23 @@ server.tool(
     const receiptId = `gov_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
     const timestamp = new Date().toISOString();
 
+    // Generate LNN explanation trace if enabled
+    let explanation: CompactExplanation | undefined;
+    let fullTrace: ExplanationTrace | undefined;
+    if (isExplainEnabled()) {
+      const traceInput: TraceInput = {
+        action_type,
+        action_description,
+        target_resource: resource,
+        risk_tier: tier,
+        violations: evaluation.violations,
+        risk_score: evaluation.riskScore,
+        decision: evaluation.decision,
+      };
+      fullTrace = await generateExplanationTrace(traceInput);
+      explanation = toCompactExplanation(fullTrace);
+    }
+
     const receipt: GovernanceReceipt = {
       receipt_id: receiptId,
       timestamp,
@@ -387,6 +411,9 @@ server.tool(
       policy_violations: evaluation.violations,
       recommended_controls: evaluation.controls,
       context: ctx,
+      ...(evaluation.decision !== "deny" && {
+        verified_badge: buildVerifiedBadge(receiptId),
+      }),
     };
 
     // Persist the receipt
@@ -413,6 +440,88 @@ server.tool(
           recommended_controls: evaluation.controls,
           governed: true,
           mode: API_KEY ? "local_fallback" : "local",
+          ...(receipt.verified_badge && { verified_badge: receipt.verified_badge }),
+          ...(explanation && { explanation }),
+          ...(fullTrace && { explanation_detail: {
+            deliberation_time_ms: fullTrace.deliberation_time_ms,
+            active_neurons: fullTrace.active_neurons,
+            total_neurons: fullTrace.total_neurons,
+            mode: fullTrace.mode,
+            causal_steps: fullTrace.causal_steps,
+            counterfactuals: fullTrace.counterfactuals,
+          }}),
+        }, null, 2),
+      }],
+    };
+  },
+);
+
+// ---------------------------------------------------------------------------
+// get_verified_badge — Returns the "Powered by DingDawg Verified" badge payload
+//
+// Creators can opt-in to emit "Powered by DingDawg Verified" in agent output.
+// When enabled, every governed action receipt includes a verifiable badge URL.
+// This turns governed agents into DingDawg marketing channels.
+//
+// Usage: after govern_action returns a receipt_id, call get_verified_badge with
+// that receipt_id to retrieve the embeddable badge payload. Agents can then
+// include this in their output, UI, or logs to signal governed provenance.
+// ---------------------------------------------------------------------------
+
+server.tool(
+  "get_verified_badge",
+  "Returns the 'Powered by DingDawg Verified' badge payload for a governed action receipt. Creators can opt-in to emit this badge in agent output — every governed action receipt includes a verifiable badge URL, turning governed agents into DingDawg marketing channels. Pass the receipt_id returned by govern_action.",
+  {
+    receipt_id: z.string().describe("Receipt ID returned by a govern_action call (e.g. 'gov_abc123_def456')"),
+  },
+  { readOnlyHint: true },
+  async ({ receipt_id }) => {
+    // Look up the persisted receipt to validate it exists and was not denied
+    const receipts = loadReceipts({ limit: 1, receiptId: receipt_id });
+    const receipt = receipts[0];
+
+    if (!receipt) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "Receipt not found",
+            detail: `No governance receipt found for id "${receipt_id}". Run govern_action first.`,
+            governed: true,
+          }, null, 2),
+        }],
+      };
+    }
+
+    if (receipt.decision === "deny") {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "Badge not available",
+            detail: "Verified badge is only issued for receipts with decision 'allow' or 'review'. This action was denied.",
+            receipt_id,
+            decision: receipt.decision,
+            governed: true,
+          }, null, 2),
+        }],
+      };
+    }
+
+    const badge = buildVerifiedBadge(receipt_id);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          success: true,
+          badge,
+          usage: {
+            markdown: `![Powered by DingDawg Verified](${badge.embed_url})`,
+            html: `<a href="${badge.embed_url}" target="_blank">Powered by DingDawg Verified</a>`,
+            plain: `${badge.text} — verify at ${badge.embed_url}`,
+          },
+          governed: true,
         }, null, 2),
       }],
     };
@@ -506,7 +615,7 @@ server.tool(
 
 server.tool(
   "compliance_check",
-  "Quick compliance check against common AI governance frameworks. Free tier: 10 checks per day. Evaluates against EU AI Act, Colorado AI Act, NIST AI RMF, and ISO 42001.",
+  "Quick compliance check against common AI governance frameworks. Free tier: 10 checks per day. Evaluates against EU AI Act, Colorado AI Act — Revised (SB26-189 / ADMT, eff. Jan 1 2027), NIST AI RMF, and ISO 42001.",
   {
     system_description: z.string().describe("Describe your AI system: what it does, data sources, decision scope"),
     framework: z.enum(["eu_ai_act", "colorado_ai_act", "nist_ai_rmf", "iso_42001", "all"]).optional().describe("Framework to check against (default: all)"),
@@ -596,34 +705,46 @@ function runComplianceCheck(
   const frameworks: FrameworkResult[] = [];
   const criticalGaps: string[] = [];
 
+  // Free-tier local checklist = simple pattern matching only: is each required
+  // control mentioned or not. The per-requirement scoring calibration — which
+  // clause carries how much weight and the pass/partial cut-offs — lives
+  // SERVER-SIDE ONLY (api.dingdawg.com). Set DINGDAWG_API_KEY for the full
+  // weighted, framework-calibrated assessment. Locally we report only a generic,
+  // uniform coverage ratio (met vs. total) so no proprietary calibration ships.
+  const coverage = (met: string[], missing: string[]): number => {
+    const total = met.length + missing.length;
+    return total === 0 ? 0 : Math.round((met.length / total) * 100);
+  };
+  const statusFor = (pct: number): "COMPLIANT" | "PARTIAL" | "NON_COMPLIANT" =>
+    pct >= 70 ? "COMPLIANT" : pct >= 40 ? "PARTIAL" : "NON_COMPLIANT";
+
   // EU AI Act
   if (framework === "eu_ai_act" || framework === "all") {
     const met: string[] = [];
     const missing: string[] = [];
-    let score = 0;
 
     if (hasKeywordWithoutNegation(desc, "risk assessment") || hasKeywordWithoutNegation(desc, "risk classif")) {
-      met.push("Risk classification (Art. 6)"); score += 10;
+      met.push("Risk classification (Art. 6)");
     } else { missing.push("Risk classification required (Art. 6)"); }
 
     if (hasKeywordWithoutNegation(desc, "human oversight") || hasKeywordWithoutNegation(desc, "human-in-the-loop")) {
-      met.push("Human oversight (Art. 14)"); score += 15;
+      met.push("Human oversight (Art. 14)");
     } else { missing.push("Human oversight required (Art. 14)"); criticalGaps.push("EU AI Act Art. 14: No human oversight mechanism"); }
 
     if (hasKeywordWithoutNegation(desc, "transparen") || hasKeywordWithoutNegation(desc, "explainab")) {
-      met.push("Transparency obligations (Art. 13)"); score += 10;
+      met.push("Transparency obligations (Art. 13)");
     } else { missing.push("Transparency obligations (Art. 13)"); }
 
     if (hasKeywordWithoutNegation(desc, "data governance") || hasKeywordWithoutNegation(desc, "training data")) {
-      met.push("Data governance (Art. 10)"); score += 10;
+      met.push("Data governance (Art. 10)");
     } else { missing.push("Data governance required (Art. 10)"); }
 
     if (hasKeywordWithoutNegation(desc, "technical document") || hasKeywordWithoutNegation(desc, "model card")) {
-      met.push("Technical documentation (Art. 11)"); score += 10;
+      met.push("Technical documentation (Art. 11)");
     } else { missing.push("Technical documentation required (Art. 11)"); }
 
     if (hasKeywordWithoutNegation(desc, "logging") || hasKeywordWithoutNegation(desc, "audit")) {
-      met.push("Record-keeping (Art. 12)"); score += 5;
+      met.push("Record-keeping (Art. 12)");
     } else { missing.push("Automatic logging required (Art. 12)"); }
 
     // High-risk category detection
@@ -631,108 +752,107 @@ function runComplianceCheck(
     for (const hr of highRisk) {
       if (desc.includes(hr)) {
         missing.push(`HIGH-RISK system detected ("${hr}") — full Art. 6-15 compliance mandatory`);
-        score -= 10;
         criticalGaps.push(`EU AI Act: High-risk AI system ("${hr}") requires full compliance`);
         break;
       }
     }
 
-    score = Math.max(0, Math.min(100, score));
-    frameworks.push({ name: "EU AI Act", score, status: score >= 70 ? "COMPLIANT" : score >= 40 ? "PARTIAL" : "NON_COMPLIANT", requirements_met: met, requirements_missing: missing });
+    const pct = coverage(met, missing);
+    frameworks.push({ name: "EU AI Act", score: pct, status: statusFor(pct), requirements_met: met, requirements_missing: missing });
   }
 
-  // Colorado AI Act
+  // Colorado ADMT Law (SB26-189)
   if (framework === "colorado_ai_act" || framework === "all") {
     const met: string[] = [];
     const missing: string[] = [];
-    let score = 0;
 
     if (hasKeywordWithoutNegation(desc, "consequential decision") || hasKeywordWithoutNegation(desc, "high-risk")) {
-      met.push("Consequential decision identification (SB24-205 Sec. 3)"); score += 15;
+      met.push("Consequential decision identification (SB26-189 — ADMT consequential decision, eff. Jan 1 2027)");
     } else { missing.push("Must identify if system makes consequential decisions"); }
 
-    if (hasKeywordWithoutNegation(desc, "impact assessment")) {
-      met.push("Impact assessment (SB24-205 Sec. 4)"); score += 20;
-    } else { missing.push("Impact assessment required (SB24-205 Sec. 4)"); criticalGaps.push("Colorado: No impact assessment documented"); }
+    // NOTE: SB26-189 REMOVED annual impact assessment obligation (was SB24-205 Sec. 4).
+    // Replacement obligation: 3-year record retention of ADMT outputs + personal data used.
+    if (hasKeywordWithoutNegation(desc, "record retention") || hasKeywordWithoutNegation(desc, "audit log") || hasKeywordWithoutNegation(desc, "data retention")) {
+      met.push("Documentation & record retention — 3 years (SB26-189, eff. Jan 1 2027)");
+    } else { missing.push("Record retention required — 3 years of ADMT outputs + personal data used (SB26-189, eff. Jan 1 2027)"); criticalGaps.push("Colorado ADMT Law (SB26-189): No record retention policy documented"); }
 
     if (hasKeywordWithoutNegation(desc, "disclosure") || hasKeywordWithoutNegation(desc, "notify")) {
-      met.push("Consumer disclosure (SB24-205 Sec. 5)"); score += 15;
-    } else { missing.push("Consumer disclosure required (SB24-205 Sec. 5)"); }
+      met.push("Consumer disclosure (SB26-189 — ADMT notice obligation, eff. Jan 1 2027)");
+    } else { missing.push("Consumer disclosure required (SB26-189 — ADMT notice obligation, eff. Jan 1 2027)"); }
 
-    if (hasKeywordWithoutNegation(desc, "opt out") || hasKeywordWithoutNegation(desc, "appeal")) {
-      met.push("Right to appeal/opt-out (SB24-205 Sec. 6)"); score += 15;
-    } else { missing.push("Right to appeal/opt-out required (SB24-205 Sec. 6)"); }
+    // SB26-189 grants "meaningful human review and reconsideration" post-adverse-outcome — NOT an opt-out right.
+    if (hasKeywordWithoutNegation(desc, "human review") || hasKeywordWithoutNegation(desc, "appeal") || hasKeywordWithoutNegation(desc, "reconsideration")) {
+      met.push("Right to meaningful human review and reconsideration — post-adverse-outcome (SB26-189, eff. Jan 1 2027)");
+    } else { missing.push("Human review and reconsideration process required post-adverse-outcome (SB26-189, eff. Jan 1 2027)"); }
 
     if (hasKeywordWithoutNegation(desc, "bias") || hasKeywordWithoutNegation(desc, "discrimination")) {
-      met.push("Algorithmic discrimination prevention"); score += 15;
+      met.push("Algorithmic discrimination prevention");
     } else { missing.push("Must test for algorithmic discrimination"); }
 
-    score = Math.max(0, Math.min(100, score));
-    frameworks.push({ name: "Colorado AI Act (SB24-205)", score, status: score >= 70 ? "COMPLIANT" : score >= 40 ? "PARTIAL" : "NON_COMPLIANT", requirements_met: met, requirements_missing: missing });
+    const pct = coverage(met, missing);
+    frameworks.push({ name: "Colorado AI Act — Revised (SB26-189 / ADMT)", score: pct, status: statusFor(pct), requirements_met: met, requirements_missing: missing });
   }
 
   // NIST AI RMF
   if (framework === "nist_ai_rmf" || framework === "all") {
     const met: string[] = [];
     const missing: string[] = [];
-    let score = 0;
 
     if (hasKeywordWithoutNegation(desc, "risk") || hasKeywordWithoutNegation(desc, "threat model")) {
-      met.push("GOVERN: Risk management process"); score += 20;
+      met.push("GOVERN: Risk management process");
     } else { missing.push("GOVERN: Establish risk management process"); }
 
     if (hasKeywordWithoutNegation(desc, "map") || hasKeywordWithoutNegation(desc, "context") || hasKeywordWithoutNegation(desc, "stakeholder")) {
-      met.push("MAP: Context and stakeholder mapping"); score += 15;
+      met.push("MAP: Context and stakeholder mapping");
     } else { missing.push("MAP: Define context, stakeholders, and intended use"); }
 
     if (hasKeywordWithoutNegation(desc, "measur") || hasKeywordWithoutNegation(desc, "metric") || hasKeywordWithoutNegation(desc, "benchmark")) {
-      met.push("MEASURE: Performance metrics defined"); score += 20;
+      met.push("MEASURE: Performance metrics defined");
     } else { missing.push("MEASURE: Define and track AI performance metrics"); }
 
     if (hasKeywordWithoutNegation(desc, "monitor") || hasKeywordWithoutNegation(desc, "mitigat") || hasKeywordWithoutNegation(desc, "remediat")) {
-      met.push("MANAGE: Ongoing monitoring and mitigation"); score += 20;
+      met.push("MANAGE: Ongoing monitoring and mitigation");
     } else { missing.push("MANAGE: Implement continuous monitoring and mitigation"); }
 
     if (hasKeywordWithoutNegation(desc, "trustworth")) {
-      met.push("Trustworthiness characteristics addressed"); score += 10;
+      met.push("Trustworthiness characteristics addressed");
     } else { missing.push("Address all 7 trustworthiness characteristics"); }
 
-    score = Math.max(0, Math.min(100, score));
-    frameworks.push({ name: "NIST AI RMF", score, status: score >= 70 ? "COMPLIANT" : score >= 40 ? "PARTIAL" : "NON_COMPLIANT", requirements_met: met, requirements_missing: missing });
+    const pct = coverage(met, missing);
+    frameworks.push({ name: "NIST AI RMF", score: pct, status: statusFor(pct), requirements_met: met, requirements_missing: missing });
   }
 
   // ISO 42001
   if (framework === "iso_42001" || framework === "all") {
     const met: string[] = [];
     const missing: string[] = [];
-    let score = 0;
 
     if (hasKeywordWithoutNegation(desc, "policy") || hasKeywordWithoutNegation(desc, "governance")) {
-      met.push("AI management system policy (Clause 5)"); score += 15;
+      met.push("AI management system policy (Clause 5)");
     } else { missing.push("AI management system policy required (Clause 5)"); }
 
     if (hasKeywordWithoutNegation(desc, "risk assessment") || hasKeywordWithoutNegation(desc, "risk treat")) {
-      met.push("Risk assessment and treatment (Clause 6)"); score += 20;
+      met.push("Risk assessment and treatment (Clause 6)");
     } else { missing.push("Risk assessment and treatment required (Clause 6)"); criticalGaps.push("ISO 42001: No risk assessment process"); }
 
     if (hasKeywordWithoutNegation(desc, "resource") || hasKeywordWithoutNegation(desc, "competen")) {
-      met.push("Resources and competence (Clause 7)"); score += 15;
+      met.push("Resources and competence (Clause 7)");
     } else { missing.push("Define resources and competence requirements (Clause 7)"); }
 
     if (hasKeywordWithoutNegation(desc, "operational") || hasKeywordWithoutNegation(desc, "lifecycle")) {
-      met.push("Operational planning and control (Clause 8)"); score += 15;
+      met.push("Operational planning and control (Clause 8)");
     } else { missing.push("Operational lifecycle management required (Clause 8)"); }
 
     if (hasKeywordWithoutNegation(desc, "performance evaluation") || hasKeywordWithoutNegation(desc, "audit")) {
-      met.push("Performance evaluation (Clause 9)"); score += 15;
+      met.push("Performance evaluation (Clause 9)");
     } else { missing.push("Performance evaluation and internal audit required (Clause 9)"); }
 
     if (hasKeywordWithoutNegation(desc, "continual improvement") || hasKeywordWithoutNegation(desc, "corrective")) {
-      met.push("Continual improvement (Clause 10)"); score += 10;
+      met.push("Continual improvement (Clause 10)");
     } else { missing.push("Continual improvement process required (Clause 10)"); }
 
-    score = Math.max(0, Math.min(100, score));
-    frameworks.push({ name: "ISO 42001", score, status: score >= 70 ? "COMPLIANT" : score >= 40 ? "PARTIAL" : "NON_COMPLIANT", requirements_met: met, requirements_missing: missing });
+    const pct = coverage(met, missing);
+    frameworks.push({ name: "ISO 42001", score: pct, status: statusFor(pct), requirements_met: met, requirements_missing: missing });
   }
 
   // Stage-specific adjustments
@@ -751,6 +871,12 @@ function runComplianceCheck(
     criticalGaps,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Meter tools (v2.1.0) — LLM spend tracking + budget enforcement
+// ---------------------------------------------------------------------------
+
+registerMeterTools(server);
 
 // ---------------------------------------------------------------------------
 // Start
