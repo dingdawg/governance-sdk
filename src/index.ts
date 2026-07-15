@@ -313,7 +313,7 @@ server.tool(
   "govern_action",
   "Governs a single AI agent action: runs a capability check + policy evaluation, then returns a governance decision (allow/deny/conditions) plus a receipt_id proving the check happened. " +
     "Not read-only — every call writes a receipt record to disk at ~/.dingdawg/governance/receipts/ (best-effort; a filesystem error never blocks the decision). " +
-    "No authentication required for local mode. If DINGDAWG_API_KEY is set, the cloud API is tried first with richer capability_check/risk_assessment detail; on any network error or non-2xx response it silently falls back to the local policy engine (mode: 'local_fallback' vs 'local' with no key). No hard rate limit. " +
+    "No authentication required for local mode. If DINGDAWG_API_KEY is set, the cloud API is tried first with richer capability_check/risk_assessment detail; on any network error or non-2xx response it silently falls back to the local policy engine (mode: 'local_fallback' vs 'local' with no key). Free-tier rate limit: 10 governed actions per rolling 24h window per machine; set DINGDAWG_API_KEY for unlimited use. " +
     "Use this before letting an agent take a consequential action (send_email, make_purchase, modify_data, api_call, etc.) — it is the only tool of the four that produces a receipt_id for a specific action. " +
     "Use audit_trail to look up receipts this tool created, get_verified_badge to surface one publicly, or compliance_check instead if you're evaluating a whole system's posture rather than one action.",
   {
