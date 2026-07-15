@@ -311,7 +311,11 @@ const server = new McpServer({
 
 server.tool(
   "govern_action",
-  "Govern any AI agent action. Performs capability check + policy evaluation + generates a governance receipt. Returns a receipt proving the action was governed. When API key is set, uses cloud API with local fallback.",
+  "Governs a single AI agent action: runs a capability check + policy evaluation, then returns a governance decision (allow/deny/conditions) plus a receipt_id proving the check happened. " +
+    "Not read-only — every call writes a receipt record to disk at ~/.dingdawg/governance/receipts/ (best-effort; a filesystem error never blocks the decision). " +
+    "No authentication required for local mode. If DINGDAWG_API_KEY is set, the cloud API is tried first with richer capability_check/risk_assessment detail; on any network error or non-2xx response it silently falls back to the local policy engine (mode: 'local_fallback' vs 'local' with no key). No hard rate limit. " +
+    "Use this before letting an agent take a consequential action (send_email, make_purchase, modify_data, api_call, etc.) — it is the only tool of the four that produces a receipt_id for a specific action. " +
+    "Use audit_trail to look up receipts this tool created, get_verified_badge to surface one publicly, or compliance_check instead if you're evaluating a whole system's posture rather than one action.",
   {
     agent_id: z.string().describe("Identifier for the AI agent performing the action"),
     action_type: z.string().describe("Type of action (e.g., 'send_email', 'make_purchase', 'modify_data', 'api_call')"),
@@ -470,7 +474,10 @@ server.tool(
 
 server.tool(
   "get_verified_badge",
-  "Returns the 'Powered by DingDawg Verified' badge payload for a governed action receipt. Creators can opt-in to emit this badge in agent output — every governed action receipt includes a verifiable badge URL, turning governed agents into DingDawg marketing channels. Pass the receipt_id returned by govern_action.",
+  "Read-only: looks up a receipt_id from a prior govern_action call and, if that action was allowed or flagged for review (not denied), returns an embeddable 'Powered by DingDawg Verified' badge payload (URL + markup) an agent can surface in its own output/UI/logs. " +
+    "No side effects, no authentication required, no rate limit. Returns an error object (not a thrown exception) if the receipt_id doesn't exist or the referenced action was denied — check the response for an `error` field rather than assuming success. " +
+    "receipt_id is required and must come from a prior govern_action response; this tool cannot generate a badge on its own. " +
+    "Use this only after govern_action to surface provenance of an already-governed action; it does not perform any new governance check itself.",
   {
     receipt_id: z.string().describe("Receipt ID returned by a govern_action call (e.g. 'gov_abc123_def456')"),
   },
@@ -534,7 +541,12 @@ server.tool(
 
 server.tool(
   "audit_trail",
-  "Get the governance audit trail. Returns governance receipts from local storage or cloud API. Free to use.",
+  "Read-only lookup of governance receipts previously created by govern_action — from local storage (~/.dingdawg/governance/receipts/) or, when DINGDAWG_API_KEY is set, the cloud API (falling back to local on any API error). " +
+    "No side effects, no authentication required for local mode, no rate limit, free to use. " +
+    "Returns { total_records, trail: [...], time_range, mode }, where each trail entry is a receipt summary (receipt_id, timestamp, agent_id, action_type, decision, risk_score, policy_violations_count) — not the full receipt. " +
+    "receipt_id and agent_id are independent filters, not mutually exclusive — supplying both narrows to that agent's occurrences of that specific receipt (usually 0 or 1 result). " +
+    "time_range default differs by mode when omitted: local mode returns full history (time_range: 'all'), cloud API mode defaults to the last 24h. limit defaults to 10 either way. " +
+    "Use this to review or verify past govern_action decisions; use govern_action to create a new receipt, get_verified_badge to surface one publicly.",
   {
     receipt_id: z.string().optional().describe("Receipt ID from a govern_action call"),
     agent_id: z.string().optional().describe("Agent ID to get all governed actions for"),
@@ -615,7 +627,11 @@ server.tool(
 
 server.tool(
   "compliance_check",
-  "Quick compliance check against common AI governance frameworks. Free tier: 10 checks per day. Evaluates against EU AI Act, Colorado AI Act — Revised (SB26-189 / ADMT, eff. Jan 1 2027), NIST AI RMF, and ISO 42001.",
+  "Evaluates a described AI system's compliance posture against one or all of: EU AI Act, Colorado AI Act — Revised (SB26-189 / ADMT, eff. Jan 1 2027), NIST AI RMF, ISO 42001. Read-only — analyzes the text you provide, does not inspect or modify your actual system, and writes nothing (unlike govern_action). " +
+    "No authentication required. Hard rate limit: 10 checks per rolling 24h window per machine; once exceeded, every call returns an error object (no partial result) until the window resets — check checks_remaining in a successful response. For unlimited checks, set DINGDAWG_API_KEY. " +
+    "Free-tier scoring is a uniform, unweighted coverage ratio (requirements mentioned vs. total) — not the fully weighted, framework-calibrated assessment, which requires an API key. " +
+    "Returns { overall_compliance (0-100), compliance_level, frameworks: [...per-framework score/status/requirements], critical_gaps, recommendation, next_step, checks_remaining }. Accuracy depends entirely on how complete system_description is — vague descriptions score conservatively low rather than guessing in your favor. " +
+    "Use this for a whole-system compliance posture check before deployment; use govern_action instead for governing individual agent actions at runtime, and audit_trail to review the history of those decisions.",
   {
     system_description: z.string().describe("Describe your AI system: what it does, data sources, decision scope"),
     framework: z.enum(["eu_ai_act", "colorado_ai_act", "nist_ai_rmf", "iso_42001", "all"]).optional().describe("Framework to check against (default: all)"),
