@@ -1,5 +1,5 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
   "name": "io.github.dingdawg/dingdawg-governance-sdk",
   "description": "TypeScript + Python types for DGP v1.0 \u2014 zero implementation logic, pure types",
   "repository": {
